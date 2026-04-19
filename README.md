@@ -189,7 +189,7 @@ PRs welcome. Open an issue for theme requests, additional metrics, or bug report
 
 ## License
 
-[MIT](./LICENSE) © 2026 Won Joon Park
+[MIT](./LICENSE) © 2026 [wpark1025](https://github.com/wpark1025)
 
 ---
 
