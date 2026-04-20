@@ -95,7 +95,17 @@ function shortenDir(absPath) {
   return `${head}/…/${segs[segs.length - 1]}`;
 }
 
-// ── Line 1: directory │ branch │ commits │ version │ clock ─────────────────
+// Read effortLevel from ~/.claude/settings.json (falls back to null).
+function readEffort() {
+  try {
+    const home = process.env.USERPROFILE || process.env.HOME || "";
+    const cfg = JSON.parse(fs.readFileSync(
+      path.join(home, ".claude", "settings.json"), "utf8"));
+    return (cfg.effortLevel || "").toLowerCase() || null;
+  } catch { return null; }
+}
+
+// ── Line 1: dir │ branch │ commits │ version │ model │ effort │ clock ──────
 function line1() {
   const dirDisp = shortenDir(cwd);
   const dirPart = wrap(C.sky, dirDisp);
@@ -122,12 +132,25 @@ function line1() {
   const ccVersion = sh("claude --version").split(/\s+/)[0] || "";
   const versionPart = ccVersion ? wrap(C.mauve, `ver${ccVersion}`) : "";
 
+  const emoji =
+    modelId.includes("opus")  ? "🧠" :
+    modelId.includes("haiku") ? "⚡" :
+    modelId.includes("sonnet") ? "🎵" : "🤖";
+  const modelPart = `${emoji} ${wrap(C.mauve, modelName)}`;
+
+  const effort = readEffort();
+  const effortColor =
+    effort === "high"   ? C.red :
+    effort === "medium" ? C.peach :
+    effort === "low"    ? C.green : C.subtext;
+  const effortPart = effort ? `⚙️ ${wrap(effortColor, effort)}` : "";
+
   const now = new Date();
   const clock = now.toTimeString().slice(0, 5);
   const clockPart = `🕐 ${wrap(C.yellow, clock)}`;
 
-  const parts = [dirPart, branchPart, commitsPart, versionPart, clockPart]
-    .filter(Boolean);
+  const parts = [dirPart, branchPart, commitsPart,
+                 modelPart, effortPart, versionPart, clockPart].filter(Boolean);
   return parts.join(SEP);
 }
 
@@ -205,14 +228,8 @@ function aggregateHistory() {
   return totals;
 }
 
-// ── Line 2: model │ REPO │ 30DAY │ 7DAY │ DAY │ LIVE ───────────────────────
+// ── Line 2: REPO │ 30DAY │ 7DAY │ DAY │ LIVE ───────────────────────────────
 function line2() {
-  const emoji =
-    modelId.includes("opus")  ? "🧠" :
-    modelId.includes("haiku") ? "⚡" :
-    modelId.includes("sonnet") ? "🎵" : "🤖";
-  const modelPart = `${emoji} ${wrap(C.mauve, modelName)}`;
-
   const h = aggregateHistory();
   const repoPart  = `${wrap(C.teal,     "REPO")}  ${wrap(C.green,  fmtMoney(sessionCost))}`;
   const monthPart = `${wrap(C.lavender, "30DAY")} ${wrap(C.peach,  fmtMoney(h.month))}`;
@@ -220,7 +237,7 @@ function line2() {
   const dayPart   = `${wrap(C.sky,      "DAY")}   ${wrap(C.pink,   fmtMoney(h.today))}`;
   const livePart  = `🔥 ${wrap(C.red, "LIVE")}  ${wrap(C.maroon, fmtMoney(sessionCost))}`;
 
-  return [modelPart, repoPart, monthPart, weekPart, dayPart, livePart].join(SEP);
+  return [repoPart, monthPart, weekPart, dayPart, livePart].join(SEP);
 }
 
 // ── Line 3: MCP servers ─────────────────────────────────────────────────────
@@ -300,8 +317,32 @@ function line3() {
     `${wrap(C.subtext, "(")}${wrap(C.green, okN)}${wrap(C.overlay, "/")}` +
     `${wrap(C.text, servers.length)}${wrap(C.subtext, "):")}`;
   const nameColor = { ok: C.sky, fail: C.red, auth: C.yellow };
-  const shown = servers.map(s => wrap(nameColor[s.status], s.name))
-    .join(wrap(C.overlay, ", "));
+  // Cap visible width so the line never wraps and displaces line 4.
+  // Terminal width isn't passed in; 110 visible chars is a safe cap for most
+  // windows, and overflow collapses into "+N more".
+  const MAX_VISIBLE = 110;
+  const stripAnsi = s => s.replace(/\x1b\[[0-9;]*m/g, "");
+  const visLen = s => stripAnsi(s).length;
+  const prefixVis = visLen(`${prefix} ${count} `);
+  const sepVis = 2; // ", "
+  const shownNames = [];
+  let used = prefixVis;
+  let hidden = 0;
+  for (let i = 0; i < servers.length; i++) {
+    const s = servers[i];
+    const colored = wrap(nameColor[s.status], s.name);
+    const addLen = s.name.length + (shownNames.length ? sepVis : 0);
+    const remaining = servers.length - i;
+    const reserve = remaining > 1 ? ` +${remaining} more`.length : 0;
+    if (used + addLen + reserve > MAX_VISIBLE && shownNames.length > 0) {
+      hidden = servers.length - i;
+      break;
+    }
+    shownNames.push(colored);
+    used += addLen;
+  }
+  let shown = shownNames.join(wrap(C.overlay, ", "));
+  if (hidden > 0) shown += wrap(C.overlay, ` +${hidden} more`);
   return `${prefix} ${count} ${shown}`;
 }
 
