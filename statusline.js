@@ -266,9 +266,7 @@ function line3() {
       // Touch (bump mtime) so concurrent renders don't all fire refreshes.
       try { fs.utimesSync(cacheFile, new Date(), new Date()); }
       catch { try { fs.writeFileSync(cacheFile, out || ""); } catch {} }
-      const worker = path.join(
-        process.env.USERPROFILE || process.env.HOME || "",
-        ".claude", "statusline-refresh-mcp.js");
+      const worker = path.join(__dirname, "statusline-refresh-mcp.js");
       const child = spawn(process.execPath, [worker], {
         detached: true,
         stdio: "ignore",
@@ -469,9 +467,7 @@ function readUsageCache() {
   } catch {}
   if (!fresh) {
     try {
-      const worker = path.join(
-        process.env.USERPROFILE || process.env.HOME || "",
-        ".claude", "statusline-refresh-usage.js");
+      const worker = path.join(__dirname, "statusline-refresh-usage.js");
       try { fs.utimesSync(cacheFile, new Date(), new Date()); }
       catch { try { fs.writeFileSync(cacheFile, data ? JSON.stringify(data) : ""); } catch {} }
       const { spawn } = require("child_process");
