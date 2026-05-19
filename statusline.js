@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // Claude Code 4-line statusline.
 // Reads Claude Code statusLine JSON from stdin, prints 4 colored lines:
-//   L1: dir · branch(dirty) · commits today · cc version · clock
-//   L2: model · session cost · today · 7d · 30d
-//   L3: MCP servers (or "none")
-//   L4: 5h block reset timer
+//   L1: dir · branch(dirty) · commits today · model · ver · LIVE $ · clock
+//   L2: MCP servers (or "none")
+//   L3: context-window usage (tokens used / window limit)
+//   L4: 5h block reset timer + week / model quotas
 //
 // No external deps beyond node + git.
 
@@ -145,102 +145,20 @@ function line1() {
     effort === "low"    ? C.green : C.subtext;
   const effortPart = effort ? `⚙️ ${wrap(effortColor, effort)}` : "";
 
+  const livePart = (sessionCost !== undefined && sessionCost !== null)
+    ? `🔥 ${wrap(C.red, "LIVE")} ${wrap(C.maroon, fmtMoney(sessionCost))}`
+    : "";
+
   const now = new Date();
   const clock = now.toTimeString().slice(0, 5);
   const clockPart = `🕐 ${wrap(C.yellow, clock)}`;
 
   const parts = [dirPart, branchPart, commitsPart,
-                 modelPart, effortPart, versionPart, clockPart].filter(Boolean);
+                 modelPart, effortPart, versionPart, livePart, clockPart].filter(Boolean);
   return parts.join(SEP);
 }
 
-// ── Pricing (per 1M tokens, USD) ─────────────────────────────────────────────
-// Rough list prices used for historical cost estimation of .jsonl records.
-// Claude Code's live session cost comes from cost.total_cost_usd, so only
-// history aggregation uses these.
-function ratesFor(modelStr) {
-  const m = (modelStr || "").toLowerCase();
-  if (m.includes("opus"))   return { in: 15.00, out: 75.00, cw5: 18.75, cw1h: 30.00, cr: 1.50 };
-  if (m.includes("haiku"))  return { in:  0.80, out:  4.00, cw5:  1.00, cw1h:  1.60, cr: 0.08 };
-  return                           { in:  3.00, out: 15.00, cw5:  3.75, cw1h:  6.00, cr: 0.30 };
-}
-function costOfUsage(u, modelStr) {
-  if (!u) return 0;
-  const r = ratesFor(modelStr);
-  const cw5  = get(u, "cache_creation.ephemeral_5m_input_tokens") || 0;
-  const cw1h = get(u, "cache_creation.ephemeral_1h_input_tokens") || 0;
-  const fallbackCw = (u.cache_creation_input_tokens || 0) - cw5 - cw1h;
-  const cw5Total = cw5 + Math.max(0, fallbackCw);
-  const cr = u.cache_read_input_tokens || 0;
-  const inp = u.input_tokens || 0;
-  const out = u.output_tokens || 0;
-  return (inp * r.in + out * r.out + cw5Total * r.cw5 + cw1h * r.cw1h + cr * r.cr) / 1e6;
-}
-
-// ── Walk .jsonl files under ~/.claude/projects for cost history ─────────────
-function aggregateHistory() {
-  const root = path.join(process.env.USERPROFILE || process.env.HOME || "", ".claude", "projects");
-  const now = Date.now();
-  const DAY = 24 * 60 * 60 * 1000;
-  const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0);
-  const startOfWeek  = new Date(now - 7  * DAY);
-  const startOfMonth = new Date(now - 30 * DAY);
-  const totals = { today: 0, week: 0, month: 0 };
-  let files = [];
-  try {
-    for (const proj of fs.readdirSync(root)) {
-      const pdir = path.join(root, proj);
-      let st; try { st = fs.statSync(pdir); } catch { continue; }
-      if (!st.isDirectory()) continue;
-      // Skip projects untouched for >30d
-      if (now - st.mtimeMs > 30 * DAY) continue;
-      for (const f of fs.readdirSync(pdir)) {
-        if (!f.endsWith(".jsonl")) continue;
-        const full = path.join(pdir, f);
-        let fst; try { fst = fs.statSync(full); } catch { continue; }
-        if (now - fst.mtimeMs > 30 * DAY) continue;
-        files.push(full);
-      }
-    }
-  } catch { return totals; }
-
-  // Cap the scan budget so the statusline stays snappy
-  files.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
-  files = files.slice(0, 80);
-
-  for (const f of files) {
-    let txt; try { txt = fs.readFileSync(f, "utf8"); } catch { continue; }
-    const lines = txt.split("\n");
-    for (const ln of lines) {
-      if (!ln) continue;
-      let j; try { j = JSON.parse(ln); } catch { continue; }
-      const u = get(j, "message.usage");
-      if (!u) continue;
-      const ts = j.timestamp ? new Date(j.timestamp).getTime() : null;
-      if (!ts || ts < startOfMonth.getTime()) continue;
-      const modelStr = get(j, "message.model") || modelId;
-      const c = costOfUsage(u, modelStr);
-      totals.month += c;
-      if (ts >= startOfWeek.getTime())  totals.week  += c;
-      if (ts >= startOfToday.getTime()) totals.today += c;
-    }
-  }
-  return totals;
-}
-
-// ── Line 2: REPO │ 30DAY │ 7DAY │ DAY │ LIVE ───────────────────────────────
-function line2() {
-  const h = aggregateHistory();
-  const repoPart  = `${wrap(C.teal,     "REPO")}  ${wrap(C.green,  fmtMoney(sessionCost))}`;
-  const monthPart = `${wrap(C.lavender, "30DAY")} ${wrap(C.peach,  fmtMoney(h.month))}`;
-  const weekPart  = `${wrap(C.sapphire, "7DAY")}  ${wrap(C.yellow, fmtMoney(h.week))}`;
-  const dayPart   = `${wrap(C.sky,      "DAY")}   ${wrap(C.pink,   fmtMoney(h.today))}`;
-  const livePart  = `🔥 ${wrap(C.red, "LIVE")}  ${wrap(C.maroon, fmtMoney(sessionCost))}`;
-
-  return [repoPart, monthPart, weekPart, dayPart, livePart].join(SEP);
-}
-
-// ── Line 3: MCP servers ─────────────────────────────────────────────────────
+// ── Line 2: MCP servers ─────────────────────────────────────────────────────
 function line3() {
   // Primary source: `claude mcp list` (ground truth, includes plugins).
   // Fallback: user mcpServers in ~/.claude.json.
@@ -344,7 +262,7 @@ function line3() {
   return `${prefix} ${count} ${shown}`;
 }
 
-// ── Line 4: 5-hour block reset timer ────────────────────────────────────────
+// ── Line 3: 5-hour block reset timer ────────────────────────────────────────
 // Anthropic's 5h block resets after an idle gap of 5h+. For long-running
 // conversations, the block start is NOT the transcript's first message — it's
 // the earliest message of the current contiguous activity cluster (where every
@@ -545,10 +463,60 @@ function line4() {
          parts.join(SEP) + (resetLabel ? SEP + resetLabel : "");
 }
 
+// ── Context line: live context-window usage from the transcript ────────────
+// The statusline JSON has no token count, but it passes transcript_path.
+// The current context size is the most recent main-chain assistant message's
+// prompt tokens (input + cache_read + cache_creation) — same figure /context
+// reports.
+function contextWindowLimit() {
+  // opus-4-7[1m] and other [1m] variants expose a 1M window.
+  if (modelId.includes("[1m]") || modelId.includes("1m")) return 1_000_000;
+  return 200_000;
+}
+
+function readContextTokens() {
+  if (!transcript) return null;
+  let txt;
+  try { txt = fs.readFileSync(transcript, "utf8"); } catch { return null; }
+  const lines = txt.split("\n");
+  // Walk backward to the last main-chain assistant message with usage.
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const ln = lines[i];
+    if (!ln || ln.indexOf(`"usage"`) < 0) continue;
+    let j; try { j = JSON.parse(ln); } catch { continue; }
+    if (j.isSidechain) continue;          // skip subagent turns
+    if (j.type !== "assistant") continue;
+    const u = get(j, "message.usage");
+    if (!u) continue;
+    const tokens = (u.input_tokens || 0)
+      + (u.cache_read_input_tokens || 0)
+      + (u.cache_creation_input_tokens || 0);
+    if (tokens > 0) return tokens;
+  }
+  return null;
+}
+
+function lineContext() {
+  const used = readContextTokens();
+  const limit = contextWindowLimit();
+  const label = wrap(C.lavender, "Context");
+  if (used === null) {
+    return `🧠 ${label}${SEP}${wrap(C.overlay, "no transcript data")}`;
+  }
+  const pct  = used / limit;
+  const free = Math.max(0, limit - used);
+  const bar  = pctBar(pct, 20);
+  const usedLimit =
+    `${wrap(C.text, fmtK(used))}${wrap(C.overlay, "/")}${wrap(C.subtext, fmtK(limit))}`;
+  const pctPart  = `${wrap(C.subtext, "(")}${pctText(pct)}${wrap(C.subtext, ")")}`;
+  const freePart = `${wrap(C.subtext, "free")} ${wrap(C.green, fmtK(free))}`;
+  return `🧠 ${label} ${bar} ${usedLimit} ${pctPart}${SEP}${freePart}`;
+}
+
 // ── Emit ────────────────────────────────────────────────────────────────────
 process.stdout.write(
   line1() + "\n" +
-  line2() + "\n" +
-  line3() + "\n" +
-  line4() + "\n"
+  line3() + "\n" +     // MCP
+  lineContext() + "\n" +
+  line4() + "\n"       // Usage / reset
 );
