@@ -469,8 +469,13 @@ function line4() {
 // prompt tokens (input + cache_read + cache_creation) — same figure /context
 // reports.
 function contextWindowLimit() {
+  // Prefer an explicit limit if Claude Code ever passes one.
+  const fromInput = get(input, "model.context_window") || get(input, "context_window");
+  if (typeof fromInput === "number" && fromInput > 0) return fromInput;
   // opus-4-7[1m] and other [1m] variants expose a 1M window.
   if (modelId.includes("[1m]") || modelId.includes("1m")) return 1_000_000;
+  // Fable / Mythos (Claude 5 family) ship with a 1M window.
+  if (modelId.includes("fable") || modelId.includes("mythos")) return 1_000_000;
   return 200_000;
 }
 
