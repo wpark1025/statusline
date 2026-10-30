@@ -90,6 +90,8 @@ The response carries a `limits[]` array: a `session` (5-hour) limit, a `weekly_a
 The progress bar and percentage shift color as you approach your limit:
 **🟢 green** under 40% → **🟡 yellow** under 70% → **🟠 peach** under 90% → **🔴 red** at 90%+. If Anthropic flags a limit as `warning` or `critical`, that color wins regardless of the number.
 
+The reset chip at the end shows the **weekly** reset by default. When the 5-hour bar is the fullest one (or Anthropic flags it), the chip switches to `5h resets …` so you see the countdown that actually matters right now.
+
 ---
 
 ## Install

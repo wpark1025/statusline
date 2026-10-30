@@ -404,6 +404,10 @@ function line4() {
   // Older API: flat five_hour / seven_day / seven_day_sonnet / seven_day_opus.
   const parts = [];
   let weekResetIso = null;
+  // Track the 5h session limit so its reset can take over the reset chip
+  // when it is the fullest bar (or Anthropic flags it warning/critical).
+  let session = null;           // { pct, severity, resetIso }
+  let maxOtherPct = -1;
   const limits = Array.isArray(u.limits) ? u.limits : [];
   if (limits.length) {
     const order = { session: 0, weekly_all: 1, weekly_scoped: 2 };
@@ -421,6 +425,11 @@ function line4() {
       }
       parts.push(pctPart(label, l.percent / 100, l.severity));
       if (l.kind === "weekly_all") weekResetIso = l.resets_at;
+      if (l.kind === "session") {
+        session = { pct: l.percent, severity: l.severity, resetIso: l.resets_at };
+      } else {
+        maxOtherPct = Math.max(maxOtherPct, l.percent);
+      }
     }
   } else {
     const pct = x => (x && typeof x.utilization === "number") ? x.utilization / 100 : null;
@@ -430,14 +439,29 @@ function line4() {
       pctPart("Sonnet", pct(u.seven_day_sonnet)),
       pctPart("Opus",   pct(u.seven_day_opus)),
     );
+    if (u.five_hour && typeof u.five_hour.utilization === "number") {
+      session = { pct: u.five_hour.utilization, severity: null,
+                  resetIso: u.five_hour.resets_at };
+    }
+    for (const x of [u.seven_day, u.seven_day_sonnet, u.seven_day_opus]) {
+      if (x && typeof x.utilization === "number") maxOtherPct = Math.max(maxOtherPct, x.utilization);
+    }
   }
   const shown = parts.filter(Boolean);
 
-  const resetIso = weekResetIso || (u.seven_day && u.seven_day.resets_at);
+  // Default: weekly reset. Switch to the 5h reset only when the 5h bar is the
+  // fullest one (ties go to 5h since it recovers sooner) or is flagged.
+  const sessionHot = session && session.resetIso && (
+    session.pct >= maxOtherPct ||
+    session.severity === "warning" || session.severity === "critical");
+  const resetIso = sessionHot
+    ? session.resetIso
+    : (weekResetIso || (u.seven_day && u.seven_day.resets_at));
+  const resetWord = sessionHot ? "5h resets" : "resets";
   const now = Date.now();
   const resetMs = resetIso ? new Date(resetIso).getTime() - now : null;
   const resetLabel = resetIso
-    ? `${wrap(C.subtext, "resets")} ${wrap(C.lavender, fmtResetAt(resetIso))}` +
+    ? `${wrap(C.subtext, resetWord)} ${wrap(C.lavender, fmtResetAt(resetIso))}` +
       (resetMs !== null ? ` ${wrap(C.overlay, `(${fmtLeft(resetMs)} left)`)}` : "")
     : "";
 
