@@ -11,7 +11,7 @@
   <img alt="Theme" src="https://img.shields.io/badge/theme-Catppuccin%20Mocha-f5c2e7?style=for-the-badge&labelColor=1e1e2e">
 </p>
 
-<img src="preview.svg" alt="Claude Code 4-line statusline showing directory, git branch, commits, CLI version, clock, model, per-session and aggregate spend, MCP server health, and 5-hour / 7-day / Sonnet usage bars with reset countdown" width="100%">
+<img src="preview.svg" alt="Claude Code 4-line statusline showing directory, git branch, commits, CLI version, clock, model, per-session and aggregate spend, MCP server health, and 5-hour / 7-day / per-model usage bars with reset countdown" width="100%">
 
 </div>
 
@@ -38,7 +38,7 @@ This statusline surfaces all of that in 4 lines, continuously, with no slash com
 - **📁 Directory + Git** — current path, branch, clean/dirty indicator, commits today
 - **🧠 Model + Spend** — active Claude model with cost for this session, today, the week, and the month
 - **🔌 MCP Server Health** — live `claude mcp list` status, color-coded (connected / needs auth / failed)
-- **⏳ Real Anthropic Rate Limits** — 5-hour window, 7-day window, Sonnet-only window, with reset time and countdown, pulled from the **same API endpoint** `/usage` uses
+- **⏳ Real Anthropic Rate Limits** — 5-hour window, 7-day window, per-model window (Fable / Opus / Sonnet, whatever your plan scopes), with reset time and countdown, pulled from the **same API endpoint** `/usage` uses
 - **🎨 Catppuccin Mocha** — warm, readable, beloved palette
 - **⚡ Fast** — background workers + 60s caches keep renders under 200ms even with network calls
 - **🛡️ No secrets stored** — uses your existing OAuth token from `~/.claude/.credentials.json`; nothing leaves your machine except the authenticated call to `api.anthropic.com`
@@ -61,7 +61,7 @@ Current working directory (shortened if deep), git branch with ✓ clean or ✗ 
 🧠 Claude Opus 4.7 │ REPO $0.15 │ 30DAY $285.04 │ 7DAY $42.91 │ DAY $8.04 │ 🔥 LIVE $0.15
 ```
 
-Active model (🧠 Opus, 🎵 Sonnet, ⚡ Haiku), current-session cost (`REPO`), and 30-day / 7-day / today spending **estimates** aggregated from `~/.claude/projects/**/*.jsonl` against published API list prices. The live session cost mirrors Claude Code's own counter.
+Active model (✨ Fable/Mythos, 🧠 Opus, 🎵 Sonnet, ⚡ Haiku), current-session cost (`REPO`), and 30-day / 7-day / today spending **estimates** aggregated from `~/.claude/projects/**/*.jsonl` against published API list prices. The live session cost mirrors Claude Code's own counter.
 
 ### Line 3 — MCP server health
 
@@ -74,7 +74,7 @@ Live output of `claude mcp list` cached for 60s. Names are colored: **sky blue**
 ### Line 4 — real usage limits
 
 ```
-⏳ Usage │ 5h █░░░░░░░ 16% │ Week ░░░░░░░░ 3% │ Sonnet ░░░░░░░░ 0% │ resets Fri 1pm (4d 23h left)
+⏳ Usage │ 5h █░░░░░░░ 14% │ Week ████░░░░ 46% │ Fable ███████░ 91% │ resets Fri 1pm (4d 23h left)
 ```
 
 This is the **exact data** shown by the `/usage` slash command inside Claude Code, surfaced continuously. Fetched from:
@@ -85,10 +85,10 @@ Authorization: Bearer <your OAuth token>
 anthropic-beta: oauth-2025-04-20
 ```
 
-The response includes `five_hour`, `seven_day`, `seven_day_sonnet`, and optionally `seven_day_opus` utilization percentages — all with real reset timestamps from Anthropic. No guesswork, no estimated caps.
+The response carries a `limits[]` array: a `session` (5-hour) limit, a `weekly_all` limit, and any `weekly_scoped` limits for a specific model family (the scope's `display_name` becomes the bar label: `Fable`, `Opus`, `Sonnet`, whatever your plan meters separately). Each entry has a real reset timestamp and a `severity` from Anthropic. Older responses with flat `five_hour` / `seven_day` / `seven_day_sonnet` / `seven_day_opus` fields are still understood. No guesswork, no estimated caps.
 
 The progress bar and percentage shift color as you approach your limit:
-**🟢 green** under 40% → **🟡 yellow** under 70% → **🟠 peach** under 90% → **🔴 red** at 90%+.
+**🟢 green** under 40% → **🟡 yellow** under 70% → **🟠 peach** under 90% → **🔴 red** at 90%+. If Anthropic flags a limit as `warning` or `critical`, that color wins regardless of the number.
 
 ---
 

@@ -4,7 +4,7 @@
 //   L1: dir · branch(dirty) · commits today · model · ver · LIVE $ · clock
 //   L2: MCP servers (or "none")
 //   L3: context-window usage (tokens used / window limit)
-//   L4: 5h block reset timer + week / model quotas
+//   L4: 5h / week / per-model (Fable, Opus, Sonnet…) quotas + reset timer
 //
 // No external deps beyond node + git.
 
@@ -133,6 +133,7 @@ function line1() {
   const versionPart = ccVersion ? wrap(C.mauve, `ver${ccVersion}`) : "";
 
   const emoji =
+    (modelId.includes("fable") || modelId.includes("mythos")) ? "✨" :
     modelId.includes("opus")  ? "🧠" :
     modelId.includes("haiku") ? "⚡" :
     modelId.includes("sonnet") ? "🎵" : "🤖";
@@ -310,62 +311,23 @@ function findCurrentBlockStart() {
   return blockStart;
 }
 
-// Sum tokens in the current 5h block, broken down by model family.
-// Scans ~/.claude/projects/**/*.jsonl for entries with ts >= blockStart.
-function blockUsage(blockStart) {
-  const root = path.join(process.env.USERPROFILE || process.env.HOME || "",
-                         ".claude", "projects");
-  const out = { all: 0, sonnet: 0, opus: 0, haiku: 0 };
-  let files = [];
-  try {
-    for (const proj of fs.readdirSync(root)) {
-      const pdir = path.join(root, proj);
-      let s; try { s = fs.statSync(pdir); } catch { continue; }
-      if (!s.isDirectory()) continue;
-      if (s.mtimeMs < blockStart) continue;
-      for (const f of fs.readdirSync(pdir)) {
-        if (!f.endsWith(".jsonl")) continue;
-        const full = path.join(pdir, f);
-        let fs2; try { fs2 = fs.statSync(full); } catch { continue; }
-        if (fs2.mtimeMs < blockStart) continue;
-        files.push(full);
-      }
-    }
-  } catch { return out; }
-
-  for (const f of files) {
-    let txt; try { txt = fs.readFileSync(f, "utf8"); } catch { continue; }
-    for (const ln of txt.split("\n")) {
-      if (!ln) continue;
-      let j; try { j = JSON.parse(ln); } catch { continue; }
-      const u = get(j, "message.usage");
-      if (!u) continue;
-      const ts = j.timestamp ? new Date(j.timestamp).getTime() : 0;
-      if (ts < blockStart) continue;
-      const tokens = (u.input_tokens || 0)
-        + (u.output_tokens || 0)
-        + (u.cache_creation_input_tokens || 0)
-        + (u.cache_read_input_tokens || 0);
-      out.all += tokens;
-      const m = (get(j, "message.model") || "").toLowerCase();
-      if      (m.includes("sonnet")) out.sonnet += tokens;
-      else if (m.includes("opus"))   out.opus   += tokens;
-      else if (m.includes("haiku"))  out.haiku  += tokens;
-    }
-  }
-  return out;
-}
-
 // Render a compact progress bar colored by how full it is.
-function pctBar(pct, len = 10) {
+// Severity reported by the usage API ("critical" / "warning") overrides the
+// percentage thresholds so an active limit is red even if the number is low.
+function pctColor(p, severity) {
+  if (severity === "critical") return C.red;
+  if (severity === "warning")  return C.peach;
+  return p >= 0.9 ? C.red : p >= 0.7 ? C.peach : p >= 0.4 ? C.yellow : C.green;
+}
+function pctBar(pct, len = 10, severity) {
   const p = Math.max(0, Math.min(1, pct));
   const filled = Math.round(len * p);
-  const color = p >= 0.9 ? C.red : p >= 0.7 ? C.peach : p >= 0.4 ? C.yellow : C.green;
+  const color = pctColor(p, severity);
   return wrap(color, "█".repeat(filled)) + wrap(C.surface, "░".repeat(len - filled));
 }
-function pctText(pct) {
+function pctText(pct, severity) {
   const p = Math.max(0, Math.min(1, pct));
-  const color = p >= 0.9 ? C.red : p >= 0.7 ? C.peach : p >= 0.4 ? C.yellow : C.green;
+  const color = pctColor(p, severity);
   return wrap(color, `${Math.round(p * 100)}%`);
 }
 
@@ -432,26 +394,46 @@ function line4() {
   if (!u) {
     return `⏳ ${wrap(C.lavender, "Usage")}${SEP}${wrap(C.overlay, "refreshing…")}`;
   }
-  const fiveH  = u.five_hour;
-  const week   = u.seven_day;
-  const sonnet = u.seven_day_sonnet;
-  const opus   = u.seven_day_opus;
-
-  const pct = x => (x && typeof x.utilization === "number") ? x.utilization / 100 : null;
-  const pctPart = (label, x) => {
-    const p = pct(x);
-    if (p === null) return null;
-    return `${wrap(C.text, label)} ${pctBar(p, 8)} ${pctText(p)}`;
+  const pctPart = (label, p, severity) => {
+    if (typeof p !== "number") return null;
+    return `${wrap(C.text, label)} ${pctBar(p, 8, severity)} ${pctText(p, severity)}`;
   };
 
-  const parts = [
-    pctPart("5h",     fiveH),
-    pctPart("Week",   week),
-    pctPart("Sonnet", sonnet),
-    pctPart("Opus",   opus),          // null-safe; only shows if plan exposes it
-  ].filter(Boolean);
+  // Newer API: a `limits[]` array. kind = session | weekly_all | weekly_scoped;
+  // scoped entries carry scope.model.display_name (e.g. "Fable", "Opus").
+  // Older API: flat five_hour / seven_day / seven_day_sonnet / seven_day_opus.
+  const parts = [];
+  let weekResetIso = null;
+  const limits = Array.isArray(u.limits) ? u.limits : [];
+  if (limits.length) {
+    const order = { session: 0, weekly_all: 1, weekly_scoped: 2 };
+    const sorted = limits.slice().sort((a, b) =>
+      (order[a.kind] ?? 9) - (order[b.kind] ?? 9));
+    for (const l of sorted) {
+      if (typeof l.percent !== "number") continue;
+      let label;
+      if      (l.kind === "session")    label = "5h";
+      else if (l.kind === "weekly_all") label = "Week";
+      else {
+        const m = get(l, "scope.model.display_name") || get(l, "scope.model.id");
+        const sf = get(l, "scope.surface");
+        label = m || sf || (l.kind === "weekly_scoped" ? "Scoped" : l.kind);
+      }
+      parts.push(pctPart(label, l.percent / 100, l.severity));
+      if (l.kind === "weekly_all") weekResetIso = l.resets_at;
+    }
+  } else {
+    const pct = x => (x && typeof x.utilization === "number") ? x.utilization / 100 : null;
+    parts.push(
+      pctPart("5h",     pct(u.five_hour)),
+      pctPart("Week",   pct(u.seven_day)),
+      pctPart("Sonnet", pct(u.seven_day_sonnet)),
+      pctPart("Opus",   pct(u.seven_day_opus)),
+    );
+  }
+  const shown = parts.filter(Boolean);
 
-  const resetIso = week && week.resets_at;
+  const resetIso = weekResetIso || (u.seven_day && u.seven_day.resets_at);
   const now = Date.now();
   const resetMs = resetIso ? new Date(resetIso).getTime() - now : null;
   const resetLabel = resetIso
@@ -460,7 +442,7 @@ function line4() {
     : "";
 
   return `⏳ ${wrap(C.lavender, "Usage")}${SEP}` +
-         parts.join(SEP) + (resetLabel ? SEP + resetLabel : "");
+         shown.join(SEP) + (resetLabel ? SEP + resetLabel : "");
 }
 
 // ── Context line: live context-window usage from the transcript ────────────
